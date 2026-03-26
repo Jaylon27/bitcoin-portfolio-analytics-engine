@@ -1,143 +1,102 @@
-# Bitcoin Portfolio Analytics Engine (Foundry-Integrated)
+# Bitcoin Portfolio Analytics Engine
 
-A multi-source Bitcoin portfolio tracker running in **Palantir Foundry**. Ingests transaction data from 7 sources, standardizes it through Pipeline Builder, backs an Ontology Object Type, and surfaces live portfolio metrics via Foundry Functions, a Workshop dashboard, and a Contour analytics dashboard.
+A multi-source financial data pipeline built end-to-end in **Palantir Foundry**. Ingests transaction data from 7 sources (API + CSV), standardizes it through Pipeline Builder ETL, backs an Ontology Object Type, and surfaces live portfolio metrics through Foundry Functions, a Workshop application, and a Contour analytics dashboard.
 
-**Foundry Instance:** `jaylonjones.usw-18.palantirfoundry.com`
+**Foundry tools used:** Transforms (Python) · Pipeline Builder · Ontology · Functions (Ontology SDK) · Workshop · Contour · Magritte (External Sources)
 
-**Foundry tools used:** Transforms (Python), Pipeline Builder, Ontology, Functions (Ontology SDK), Workshop, Contour
+---
+
+## Workshop Application
+
+Live transaction explorer with KPI cards powered by Foundry Functions and real-time Kraken API data.
+
+![Workshop — KPI cards and transaction table](screenshots/workshop_4.png)
+
+KPI cards (BTC Price, Holdings, Portfolio Value, Profit, Return %, Avg. Purchase Price) are computed at query time by Foundry Functions calling the Kraken Ticker API. The transaction table includes computed `Total Return ($)` and `Return (%)` columns for every row.
+
+![Workshop — Filter sidebar and object detail panel](screenshots/workshop_3.png)
+
+Filter sidebar supports multi-field filtering (Source, Type, ID, Datetime range). Clicking any transaction opens the Object detail panel showing all properties from the `Bitcoin Transaction` Object Type.
+
+## Pipeline Builder
+
+Visual ETL pipeline that standardizes 8 input streams into a unified 10-column schema, then enriches with historical price data.
+
+![Pipeline Builder — Main pipeline](screenshots/main-bitcoin-savings-tracker-pipeline.png)
+
+Each source feeds into a dedicated transformation node, all streams union into a single dataset, then LEFT JOIN with a 15-minute OHLC price dataset to backfill exchange rates. The output backs the `Bitcoin Transaction` Object Type.
+
+## Contour Analytics Dashboard
+
+SQL-driven analytics dashboard with three tabs: Portfolio Performance, Accumulation, and DCA History.
+
+![Contour — Portfolio Performance](screenshots/contour__4.png)
+
+![Contour — Accumulation (Cumulative BTC Holdings)](screenshots/contour__2.png)
 
 ---
 
 ## Architecture Overview
 
-The project spans four layers, two Foundry code repositories, and a set of no-code Pipeline Builder pipelines.
+The project spans four layers across two Foundry code repositories and a set of no-code Pipeline Builder pipelines.
 
 ### Layer 1 — Data Ingestion
 
-Two ingestion patterns feed raw data into Foundry:
-
-**Automated (API):**
-- `gemini_rewards_ingestion.py` in the `API_Data_Ingestion` repo pulls Gemini credit card reward transactions via the Gemini `/v1/transfers` endpoint. Uses `@incremental()` transforms so each run only processes new records. Authenticates with HMAC-SHA384 signing, secrets stored in Magritte sources. For each new reward, hits the Kraken OHLC API to capture the BTC/USD price at that exact moment. Runs on a schedule — the `Bitcoin Transaction` Object Type builds every 4 hours, which triggers the ingestion transform.
-
-**Manual (CSV uploads):**
-- All other sources are ingested as CSV uploads into Foundry datasets. Strike and Sparrow have dedicated Loader pipelines (union of multiple CSVs over time). The remaining sources are one-time CSV uploads.
+- **Automated (API):** A Python transform ([`gemini_rewards_ingestion.py`](../API_Data_Ingestion/transforms-python/src/myproject/datasets/gemini_rewards_ingestion.py)) pulls transactions from the Gemini API using `@incremental()` transforms. Authenticates with HMAC-SHA384 signing, secrets managed through Magritte sources. Each new record is enriched with a BTC/USD price from the Kraken OHLC API at ingestion time.
+- **Manual (CSV):** Six additional sources are ingested as CSV uploads. Two active sources (Strike, Sparrow) have dedicated Loader pipelines that union monthly CSVs into master datasets.
 
 ### Layer 2 — Pipeline Builder (ETL)
 
-Visual, no-code pipelines in Foundry that standardize, union, and enrich all source data:
+8 source-specific transforms standardize raw data into a unified 10-column schema (`timestamp`, `source`, `type`, `amount_btc`, `amount_usd`, `exchange_rate`, `fee_btc`, `fee_usd`, `notes`, `id`). All streams are unioned, then LEFT JOINed with a historical 15-minute OHLC price dataset to backfill missing exchange rates. Output: `Bitcoin Transactions Dataset` → `Bitcoin Transaction` Object Type.
 
-- **Loader Pipelines:** Strike Loader and Sparrow Loader union multiple CSV uploads into master datasets.
-- **Main Pipeline:** 8 source-specific transforms standardize raw columns into a unified 10-column schema, union them, then LEFT JOIN with a historical price dataset to fill missing exchange rates.
-- **Output:** `Bitcoin Transactions Dataset` → `Bitcoin Transaction` Object Type in the Ontology.
+See [PIPELINE_LOGIC.md](./PIPELINE_LOGIC.md) for the full pipeline flow with schema details and transformation rules.
 
-See [PIPELINE_LOGIC.md](./PIPELINE_LOGIC.md) for the full pipeline flow.
+### Layer 3 — Functions (Ontology SDK)
 
-### Layer 3 — Functions & Workshop
+Foundry Functions ([`portfolio_metrics.py`](../Bitcoin-Savings-Tracker-Repository/python-functions/python/python_functions/portfolio_metrics.py)) operate on `BitcoinTransaction` objects to compute live portfolio metrics. Functions call the Kraken Ticker API at query time for real-time pricing. Powers the Workshop KPI cards and computed table columns.
 
-**Foundry Functions** (`portfolio_metrics.py` in the `Bitcoin-Savings-Tracker-Repository` repo) operate on `BitcoinTransaction` objects via the Ontology SDK to compute live portfolio metrics.
+### Layer 4 — Dashboards
 
-Transaction-level functions:
-- `get_current_price()` — Live BTC/USD from Kraken Ticker API
-- `get_total_return()` / `get_total_return_percentage()` — Per-transaction unrealized gain/loss
-
-Portfolio-level aggregate functions:
-- `total_btc_holdings()` — Total BTC counted as "stacked" (Sparrow + IBIT only)
-- `total_portfolio_value()` — Current USD value of all stacked BTC (holdings * live price)
-- `total_cost_basis()` — Total USD spent on all Buy transactions across every source
-- `average_purchase_price()` — Weighted average USD price paid per BTC (DCA entry point)
-- `total_fees_paid()` — Total fees paid in USD across all transactions
-- `overall_return_percentage()` — Portfolio-level return: (portfolio value - cost basis) / cost basis
-- `total_usd_profit()` — Aggregated unrealized profit across all 5 tracked sources
-- Per-source profit: `total_profit_coinbase`, `total_profit_gemini`, `total_profit_exodus`, `total_profit_ibit`, `total_profit_strike`
-
-**Workshop Dashboard** provides a transaction-level view with live KPI cards:
-- **KPI card row:** BTC Price, BTC Holdings, Portfolio Value, Total Profit, Overall Return (%), Avg. Purchase Price — all powered by Foundry Functions with live Kraken API data
-- **Filter sidebar:** Source, Type, ID, Datetime range
-- **Transaction table:** All transaction fields + computed Total Return ($) and Return (%) columns
-- **Detail panel:** Click any transaction to see all Object properties
-
-### Layer 4 — Contour Analytics Dashboard
-
-**BTC Savings Tracker Dashboard** built in Foundry Contour provides historical analytics across three tabs:
-
-**Portfolio Performance tab:**
-- Portfolio Value vs. Cost Basis — dual-axis line chart showing portfolio value (green) against cumulative USD spent (blue) over time
-- Profit Over Time — monthly profit/loss trend line
-- Percent Return Over Time — monthly return percentage trend line
-
-**Accumulation tab:**
-- Cumulative BTC Holdings — step chart showing BTC stack growing over time with each purchase
-- Cumulative USD Spent — step chart showing total capital deployed over time
-
-**DCA History tab:**
-- Monthly DCA tracker table — columns: year_month, mean exchange rate, sum BTC bought, sum USD spent
-- Grand total row with lifetime aggregates
-
-**Summary Table:**
-- Single-row aggregate view: total USD spent, total BTC bought, average purchase price, total fees, transaction count
+- **Workshop** — Transaction-level explorer with live KPI cards, multi-field filtering, and object detail panels
+- **Contour** — SQL-driven historical analytics: Portfolio Performance (value vs. cost basis, profit, return %), Accumulation (cumulative holdings and spend), DCA History (monthly breakdown)
 
 ---
 
-## Source Breakdown
+## Technical Highlights
 
-### Strike (Active — Primary)
-- **What it is:** Main BTC purchasing platform. Also receives direct deposits as Bitcoin.
-- **Ingestion:** Monthly manual CSV uploads. No GET transaction history API available from Strike. The Strike Loader pipeline unions each month's CSV into the `Strike Master Dataset`.
-- **Profit tracked:** Yes — `total_profit_strike()`
-- **Complexity:** Strike is used for buying BTC, receiving direct deposits (classified as "Purchase" in raw data, transformed to "Buy"), paying bills, and sending BTC to cold storage or other wallets. The `notes` field distinguishes "Send to Cold Storage" transfers from actual outflows. Sends to cold storage are excluded from profit/loss calculations since they're internal portfolio movement, not spending.
+**Incremental transforms with deduplication** — The API ingestion transform uses Foundry's `@incremental()` decorator so each scheduled run only processes new records. Deduplication logic compares incoming EIDs against previously written output and applies a timestamp threshold derived from both static CSV data and prior automated runs.
 
-### Gemini (Active — Credit Card Rewards)
-- **What it is:** Gemini credit card that auto-purchases small amounts of BTC with every credit card transaction.
-- **Ingestion:** Two streams:
-  - **Automated:** `gemini_rewards_ingestion.py` pulls reward transactions from the Gemini API. The `Automated_Gemini_Transformations` step renames the "Reward" type to "Buy" during standardization.
-  - **Static CSV:** `031626_Gemini_BTCTra...` contains historical Gemini transactions from before the API automation was set up.
-- **Profit tracked:** Yes — `total_profit_gemini()`
+**HMAC-SHA384 API authentication** — Gemini API requests are signed with HMAC-SHA384 using a base64-encoded JSON payload. API keys and secrets are stored in Magritte sources (Foundry's external secrets manager), never hardcoded.
 
-### Sparrow (Active — Cold Storage)
-- **What it is:** Cold storage wallet. Receive-only — BTC sent here is considered long-term savings ("stacked").
-- **Ingestion:** Manual CSV uploads via the Sparrow Loader pipeline.
-- **Profit tracked:** No. Sparrow only receives BTC; the cost basis is already accounted for at the sending exchange. Sparrow "Receive" transactions contribute to `total_btc_holdings()`.
+**Real-time price enrichment** — Two layers of price data: (1) at ingestion time, each Gemini reward transaction is enriched with a BTC/USD price from the Kraken OHLC API; (2) at query time, Foundry Functions call the Kraken Ticker API to compute live unrealized returns.
 
-### IBIT (Mostly Inactive)
-- **What it is:** BlackRock Bitcoin ETF held in a Roth IRA through Charles Schwab. Last purchased May 2025.
-- **Ingestion:** One-time CSV upload from Schwab. If stacking resumes, may connect to the Schwab API.
-- **Profit tracked:** Yes — `total_profit_ibit()`
-- **Note:** IBIT positions count toward `total_btc_holdings()` because they represent long-term, tax-advantaged BTC exposure.
+**Exchange rate backfill via LEFT JOIN** — All transaction timestamps are rounded to 15-minute intervals during source-specific transformations. The unioned dataset is LEFT JOINed with `btc_15m_data_2018_to_2026` (15-minute OHLC candles) to fill exchange rates for transactions where the source didn't provide one.
 
-### Coinbase (Inactive / Legacy)
-- **What it is:** No longer used. Historical buy/sell/receive data only.
-- **Ingestion:** One-time CSV upload.
-- **Profit tracked:** Yes — `total_profit_coinbase()`
+**Ontology-backed Functions** — Portfolio metrics operate on typed `BitcoinTransaction` objects through the Ontology SDK, not raw dataframes. Functions compose (e.g., `total_portfolio_value` calls `total_btc_holdings` and `get_current_price`) to build aggregate KPIs from atomic calculations.
 
-### Exodus (Inactive / Legacy)
-- **What it is:** No longer used. Historical buy/sell/receive data only.
-- **Ingestion:** One-time CSV upload.
-- **Profit tracked:** Yes — `total_profit_exodus()`
-
-### CashApp (Rarely Used)
-- **What it is:** Used only to receive BTC from Strike and sell it for USD for person-to-person payments. Never used to buy BTC.
-- **Ingestion:** One-time CSV upload.
-- **Profit tracked:** No — excluded from all profit functions because no BTC is purchased here.
+**Scheduled pipeline** — The Object Type builds every 4 hours, which triggers the API ingestion transform, keeping the pipeline continuously up to date.
 
 ---
 
-## Key Concepts
+## Code Walkthrough
 
-### "Stacked" BTC
-Only BTC in **Sparrow** (cold storage) and **IBIT** (Roth IRA) is considered "stacked." Everything sitting on exchanges is potentially spendable. The `total_btc_holdings()` function reflects this definition.
+### [`gemini_rewards_ingestion.py`](../API_Data_Ingestion/transforms-python/src/myproject/datasets/gemini_rewards_ingestion.py)
+Foundry Transform that automates data ingestion from the Gemini API.
 
-### Strike Profit Logic
-Strike transactions include buys, direct deposits, bill payments, sends to cold storage, and sends to other wallets (e.g., CashApp). The profit function:
-- **Buy:** Adds unrealized gain (current value - cost basis)
-- **Sell:** Subtracts unrealized gain
-- **Send (not to cold storage):** Treated as a sell — subtracts from profit since BTC left the portfolio
-- **Send to Cold Storage:** Excluded — internal movement, not actual spending
+- Uses `@incremental()` and `@external_systems()` decorators to integrate with Foundry's scheduling and secrets management
+- Builds HMAC-SHA384 signed requests using `hashlib`, `hmac`, and `base64`
+- Filters API responses to only "Reward" type transactions, deduplicates against existing EIDs
+- For each new reward, calls the Kraken OHLC API to capture the BTC/USD price at that moment
+- Appends new records with `output.write_pandas()` for incremental writes
 
-### Exchange Rate Backfill
-A `btc_15m_data_2018_to_2026` dataset containing 15-minute OHLC candles is LEFT JOINed with the unioned transaction data. All transaction timestamps are rounded to 15-minute intervals in each source-specific transformation (before union). This fills in exchange rates for transactions that don't have one from their source.
+### [`portfolio_metrics.py`](../Bitcoin-Savings-Tracker-Repository/python-functions/python/python_functions/portfolio_metrics.py)
+Foundry Functions that compute live portfolio analytics via the Ontology SDK.
 
-### Scale
-The dataset currently contains ~907 transactions across all sources (~642 Buy transactions contributing to cost basis). Lifetime totals: ~1.351 BTC bought, ~$124,212 USD spent, ~$1,288 in fees.
+- `get_current_price()` — Calls Kraken Ticker API through a Magritte-managed HTTPS connection
+- `get_total_return()` / `get_total_return_percentage()` — Per-transaction unrealized gain/loss, batched over a list of objects to minimize API calls
+- `total_btc_holdings()` — Aggregates holdings with source-specific filtering logic
+- `total_portfolio_value()`, `total_cost_basis()`, `average_purchase_price()`, `total_fees_paid()`, `overall_return_percentage()` — Portfolio-level KPIs that compose from lower-level functions
+- Per-source profit functions with custom business logic (e.g., Strike excludes cold storage sends from P&L calculations)
 
 ---
 
@@ -147,24 +106,12 @@ The dataset currently contains ~907 transactions across all sources (~642 Buy tr
 bitcoin-savings-tracker/
 ├── docs/
 │   ├── README.md                    # This file
-│   ├── PIPELINE_LOGIC.md            # Detailed pipeline flow
+│   ├── PIPELINE_LOGIC.md            # Detailed pipeline flow and schema
 │   └── screenshots/                 # Workshop, Pipeline Builder, and Contour screenshots
-├── API_Data_Ingestion/              # Foundry Transforms repo (Gemini API ingestion)
+├── API_Data_Ingestion/              # Foundry Transforms repo
 │   └── transforms-python/src/myproject/datasets/
 │       └── gemini_rewards_ingestion.py
-└── Bitcoin-Savings-Tracker-Repository/  # Foundry Functions repo (portfolio metrics)
+└── Bitcoin-Savings-Tracker-Repository/  # Foundry Functions repo
     └── python-functions/python/python_functions/
         └── portfolio_metrics.py
 ```
-
-Both repos are hosted on the Foundry instance via Stemma Git.
-
----
-
-## Foundry Links
-
-- [Bitcoin Transaction Object Type](https://jaylonjones.usw-18.palantirfoundry.com/workspace/ontology/object-type/edqd5xlc.bitcoin-transaction/overview)
-- [Bitcoin Savings Tracker Pipeline](https://jaylonjones.usw-18.palantirfoundry.com/workspace/builder/ri.eddie.main.pipeline.2b9fddfb-9b8f-4df0-ab2b-d9c09ce92f26/sandbox/86d3f258-c103-4811-ae95-06295fedff14)
-- [Bitcoin Savings Tracker Workshop](https://jaylonjones.usw-18.palantirfoundry.com/workspace/module/view/latest/ri.workshop.main.module.2e0814a6-b3ab-4000-8c2a-d4839feb1660)
-- [Gemini API Source (Magritte)](https://jaylonjones.usw-18.palantirfoundry.com/workspace/compass/view/ri.compass.main.folder.f410e5fc-1232-4624-b547-7c3ca93df88e)
-- [Kraken API Source (Magritte)](https://jaylonjones.usw-18.palantirfoundry.com/workspace/compass/view/ri.compass.main.folder.481dd0b2-3067-4ae4-ae09-5c2bbb454751)
