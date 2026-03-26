@@ -1,0 +1,21 @@
+# Palantir build system files (not useful for showcase)
+.git-palantir/
+.gradle/
+.patches/
+.maestro/
+gradlew
+gradlew.bat
+gradleww
+gradle/
+build.gradle
+settings.gradle
+gradle.properties
+templateConfig.json
+transforms-shrinkwrap.yml
+ci.yml
+repoConfig.json
+functions.json
+.functions/
+
+# Nested Palantir .git directories are naturally excluded
+# (git ignores .git inside subdirectories)
