@@ -464,6 +464,58 @@ A naive ontology would group all crypto together because the data comes from the
 | `exchange_rate`, `closing_price_usd`, `btc_equivalent`, `price_per_unit` | Sortable | Useful for ordering but not free-text search |
 | `savings_rate_pct`, `yoy_change_pct`, `daily_change_pct`, `bitcoin_pct`, `investment_pct`, `cash_pct` | Sortable | Percentage fields used for ranking and threshold filtering |
 
+### Shared Property Candidates
+
+Properties that appear on multiple object types should be backed by **shared properties** to prevent metadata drift. A shared property centralizes the schema definition (name, description, base type, formatting, render hints, visibility) while each object type retains its own data and local API name. Per the DRY principle: if you've defined the same property three times, refactor it into a shared definition.
+
+| Shared Property | Base Type | Used On | Rationale |
+|----------------|-----------|---------|-----------|
+| `Transaction Date` | Date | `BankTransaction.date`, `InvestmentTransaction.date` | Same semantic meaning, same formatting, same render hints across both domains |
+| `USD Amount` | Double | `BankTransaction.amount`, `InvestmentTransaction.amount_usd`, `BitcoinTransaction.amount_usd` | All represent USD value of a financial event. Shared property ensures consistent currency formatting |
+| `BTC Equivalent` | Double | `BankTransaction.btc_equivalent`, `InvestmentTransaction.btc_equivalent`, `SpendingCategory.btc_equivalent_spent` | All computed the same way (USD / BTC daily close). Shared property locks the formatting and render hints |
+| `Is Active` | Boolean | `BankAccount.is_active`, `InvestmentAccount.is_active`, `BitcoinSource.is_active` | Identical meaning across all account/source types |
+| `Flagged` | Boolean | `BitcoinTransaction.flagged`, `BankTransaction.flagged` | Same operational metadata pattern. Both are edit-only properties used for the flagging workflow |
+| `Review Notes` | String | `BitcoinTransaction.review_notes`, `BankTransaction.review_notes` | Same writeback-only pattern with identical render hints (Not Searchable) |
+| `Institution` | String | `BankAccount.institution`, `InvestmentAccount.institution` | Same concept — the financial institution name |
+
+**Attaching shared properties does not change local API names.** This means existing functions, Workshop configs, and OSDK integrations referencing `BankTransaction.amount` or `BitcoinTransaction.amount_usd` continue to work after attaching the shared `USD Amount` property. Only the metadata (display name, description, formatting) is centralized.
+
+**Relationship to interfaces:** Shared properties and interfaces complement each other at different levels. When the `FinancialTransaction` interface is eventually created (Section 11.4), its required properties (`date`, `amountUsd`, `btcEquivalent`) should use shared properties. This ensures that implementing object types not only satisfy the interface contract (structure) but also present consistent metadata (formatting, render hints) across the ontology.
+
+### Value Formatting to Configure
+
+Value formatting transforms raw property values into human-readable displays without changing underlying data.
+
+| Property Pattern | Format Type | Configuration | Example |
+|-----------------|-------------|---------------|---------|
+| All USD amounts (`amount`, `amount_usd`, `total_spent`, `total_income`, `total_expenses`, `total_net_worth`, `portfolio_value_usd`, `cost_basis_usd`) | Numeric — Currency | Prefix: `$`, decimal places: 2, compact notation for large values | `45892.50` → `$45,892.50`; `1250000` → `$1.25M` |
+| All BTC amounts (`amount_btc`, `btc_equivalent`, `total_holdings_btc`) | Numeric — Decimal | Decimal places: 8 (satoshi precision), no compact notation | `0.00150000` → `0.00150000` |
+| All percentages (`savings_rate_pct`, `yoy_change_pct`, `daily_change_pct`, `bitcoin_pct`, `pct_of_total_spending`) | Numeric — Suffix | Suffix: `%`, decimal places: 1 | `12.5` → `12.5%` |
+| All dates (`date`, `month`) | Date/Time | Format: `MMM DD, YYYY` | `2024-03-15` → `Mar 15, 2024` |
+| Timestamps (`timestamp`) | Date/Time | Format: `MMM DD, YYYY h:mm A` with timezone | `2024-03-15T14:30:00Z` → `Mar 15, 2024 2:30 PM` |
+
+### Conditional Formatting Rules
+
+Conditional formatting applies color-coding and visual styling based on property values — making Workshop and Object Explorer immediately scannable.
+
+| Object Type | Property | Rule | Formatting |
+|-------------|----------|------|------------|
+| `BankTransaction` | `amount` | `amount > 0` | Green text (income/credit) |
+| `BankTransaction` | `amount` | `amount < 0` | Red text (expense/debit) |
+| `BankTransaction` | `is_transfer` | `is_transfer = true` | Gray text (de-emphasized — not income or spending) |
+| `BitcoinTransaction` | `type` | `type = "Buy"` | Green text |
+| `BitcoinTransaction` | `type` | `type = "Sell"` | Red text |
+| `MonthlyCashFlow` | `savings_rate_pct` | `>= 20` | Green background (strong savings) |
+| `MonthlyCashFlow` | `savings_rate_pct` | `10–20` | Yellow background (moderate) |
+| `MonthlyCashFlow` | `savings_rate_pct` | `< 10` | Red background (below target) |
+| `PersonalInflationMetric` | `yoy_change_pct` | `> 0` | Red text (costs rising) |
+| `PersonalInflationMetric` | `yoy_change_pct` | `<= 0` | Green text (costs flat or declining) |
+| `PersonalInflationMetric` | `btc_denominated_change_pct` | `< 0` | Green text (BTC purchasing power improving) |
+| `NetWorthSnapshot` | `daily_change_usd` | `> 0` | Green text |
+| `NetWorthSnapshot` | `daily_change_usd` | `< 0` | Red text |
+
+**Conditional formatting on a different property:** Foundry allows evaluating one property to format another. Example: color the `category` text on `PersonalInflationMetric` based on whether `yoy_change_pct` exceeds the official CPI — categories inflating faster than CPI get red text, those below get green. This uses a "compare against constant" rule where the constant is the latest CPI figure.
+
 ---
 
 ## 5. Link Types
